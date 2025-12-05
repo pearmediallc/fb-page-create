@@ -925,33 +925,33 @@ class FacebookPageGenerator:
                 print(f">>> DEBUG: Found {len(divs_with_role)} div[role='button'] elements")
 
             # ========================================
-            # STEP 9: Click buttons FAST (Next → Next → Skip → Done)
-            # Buttons appear quickly - click within 0.5 sec each
+            # STEP 9: Click buttons FAST (Next → Skip → Next → Done)
+            # Correct order! Buttons appear quickly - click within 0.5 sec each
             # ========================================
-            print(">>> PAGE CREATION STEP 9: Clicking buttons FAST...")
+            print(">>> PAGE CREATION STEP 9: Clicking buttons (Next → Skip → Next → Done)...")
 
             # Brief wait after Create Page click
             time.sleep(0.5)
 
-            # Click buttons as fast as possible
-            fast_buttons = [
-                ("Next", "//span[text()='Next']"),
-                ("Next", "//span[text()='Next']"),
-                ("Skip", "//span[text()='Skip']"),
-                ("Done", "//span[text()='Done']"),
-            ]
+            # Correct button order: Next → Skip → Next → Done
+            # Using CSS selector with exact Facebook classes
+            button_css = "span.x1lliihq.x6ikm8r.x10wlt62.x1n2onr6.xlyipyv.xuxw1ft"
+            button_order = ["Next", "Skip", "Next", "Done"]
 
-            for button_name, selector in fast_buttons:
+            for button_name in button_order:
                 clicked = False
                 # Try 5 times in 0.5 sec total
                 for _ in range(5):
                     try:
-                        elem = self.driver.find_element(By.XPATH, selector)
-                        if elem.is_displayed():
-                            self.driver.execute_script("arguments[0].click();", elem)
-                            print(f">>> Clicked '{button_name}'")
-                            clicked = True
-                            time.sleep(0.5)  # 0.5 sec before next button
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, button_css)
+                        for elem in elements:
+                            if elem.is_displayed() and elem.text == button_name:
+                                self.driver.execute_script("arguments[0].click();", elem)
+                                print(f">>> Clicked '{button_name}'")
+                                clicked = True
+                                time.sleep(0.5)  # 0.5 sec before next button
+                                break
+                        if clicked:
                             break
                     except:
                         time.sleep(0.1)
@@ -959,64 +959,34 @@ class FacebookPageGenerator:
                     print(f">>> '{button_name}' not found")
 
             # ========================================
-            # STEP 9.5: Wait for redirect to Professional Dashboard (max 60 sec, exit early)
+            # STEP 9.5: Wait 2 MINUTES for page redirect (do nothing, just wait)
+            # Page will automatically redirect to: https://www.facebook.com/profile.php?id=NUMBER
             # ========================================
-            print(">>> PAGE CREATION STEP 9.5: Waiting for Professional Dashboard (max 60 sec)...")
+            print(">>> PAGE CREATION STEP 9.5: Waiting 2 minutes for page redirect (no clicking)...")
 
-            max_wait = 60  # Max 60 seconds
+            max_wait = 120  # 2 minutes
             start_wait = time.time()
-            current_url = self.driver.current_url
             page_url_found = False
-
-            print(f">>> Starting URL: {current_url}")
 
             while (time.time() - start_wait) < max_wait:
                 current_url = self.driver.current_url
                 elapsed = int(time.time() - start_wait)
 
-                # Check for Professional Dashboard span (primary success indicator)
-                try:
-                    dashboard_selectors = [
-                        "//span[text()='Professional dashboard']",
-                        "//span[contains(text(), 'Professional dashboard')]",
-                        "//span[text()='Professional Dashboard']",
-                    ]
-                    for selector in dashboard_selectors:
-                        try:
-                            dashboard_elem = self.driver.find_element(By.XPATH, selector)
-                            if dashboard_elem.is_displayed():
-                                print(f">>> SUCCESS! Found 'Professional Dashboard' after {elapsed} seconds")
-                                page_url_found = True
-                                break
-                        except NoSuchElementException:
-                            continue
-                except Exception:
-                    pass
-
-                if page_url_found:
-                    break
-
-                # Check if URL contains page ID (profile.php?id= or numeric path)
-                if "profile.php?id=" in current_url or re.search(r'facebook\.com/\d+', current_url):
-                    print(f">>> SUCCESS! Redirected to page URL after {elapsed} seconds")
+                # Check if redirected to page URL (profile.php?id=NUMBER)
+                if "profile.php?id=" in current_url:
+                    print(f">>> SUCCESS! Page created! Redirected after {elapsed} seconds")
+                    print(f">>> Page URL: {current_url}")
                     page_url_found = True
                     break
 
-                # Check if no longer on creation page
-                still_on_creation = any(cu in current_url.lower() for cu in creation_urls)
-                if not still_on_creation and "facebook.com" in current_url and "/pages/" not in current_url:
-                    print(f">>> URL changed to: {current_url}")
-                    page_url_found = True
-                    break
+                # Log progress every 30 seconds
+                if elapsed % 30 == 0 and elapsed > 0:
+                    print(f">>> [{elapsed}s] Still waiting for redirect... Current URL: {current_url}")
 
-                # Log progress every 20 seconds
-                if elapsed % 20 == 0 and elapsed > 0:
-                    print(f">>> [{elapsed}s] Waiting for redirect... Current URL: {current_url}")
-
-                time.sleep(2)  # Check every 2 seconds
+                time.sleep(2)  # Check every 2 seconds, but don't click anything
 
             # ========================================
-            # STEP 10: Extract page ID from current URL (simple approach)
+            # STEP 10: Extract page ID from current URL
             # ========================================
             print(">>> PAGE CREATION STEP 10: Extracting page ID from URL...")
             current_url = self.driver.current_url

@@ -23,14 +23,19 @@ def get_db():
 
     if _db is None:
         try:
-            _client = MongoClient(settings.MONGO_URI)
+            # Short timeout (3 sec) so it fails fast if MongoDB not available
+            _client = MongoClient(
+                settings.MONGO_URI,
+                serverSelectionTimeoutMS=3000,  # 3 second timeout
+                connectTimeoutMS=3000
+            )
             # Test connection
             _client.admin.command('ping')
             _db = _client[settings.MONGO_DB_NAME]
             logger.info(f"Connected to MongoDB: {settings.MONGO_DB_NAME}")
             # Create indexes after connection
             ensure_indexes()
-        except ConnectionFailure as e:
+        except Exception as e:
             logger.error(f"MongoDB connection failed: {e}")
             raise
 
