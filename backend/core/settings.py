@@ -156,6 +156,35 @@ FACEBOOK_ACCOUNTS = [
 ]
 
 # ===========================================
+# Multi-Profile Rotation Settings
+# Used to rotate between profiles to avoid rate limits
+# ===========================================
+# Pages to create per profile before rotating (default: 3)
+PAGES_PER_PROFILE = int(os.getenv('PAGES_PER_PROFILE', '3'))
+
+# List of creator profiles for rotation
+# Format: [{'email': 'x@x.com', 'password': 'xxx', 'name': 'Profile 1'}, ...]
+# If empty, falls back to CREATOR_PROFILE_EMAIL/PASSWORD
+CREATOR_PROFILES = [
+    {
+        'email': os.getenv('CREATOR_PROFILE_1_EMAIL', os.getenv('CREATOR_PROFILE_EMAIL', 'kritikaverma290902@gmail.com')),
+        'password': os.getenv('CREATOR_PROFILE_1_PASSWORD', os.getenv('CREATOR_PROFILE_PASSWORD', 'kritika@2909')),
+        'name': 'Profile 1 (Primary)',
+        'pages_per_session': PAGES_PER_PROFILE,
+    },
+    # Add more profiles here for rotation:
+    # {
+    #     'email': os.getenv('CREATOR_PROFILE_2_EMAIL', ''),
+    #     'password': os.getenv('CREATOR_PROFILE_2_PASSWORD', ''),
+    #     'name': 'Profile 2',
+    #     'pages_per_session': PAGES_PER_PROFILE,
+    # },
+]
+
+# Filter out profiles with empty credentials
+CREATOR_PROFILES = [p for p in CREATOR_PROFILES if p.get('email') and p.get('password')]
+
+# ===========================================
 # Page Creation Settings (No Rate Limits)
 # ===========================================
 # No delays between page creations - natural flow

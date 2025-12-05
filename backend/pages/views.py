@@ -66,12 +66,14 @@ def run_task_sync(task_id: str):
     """
     Run page generation task synchronously in background thread.
 
-    NEW FLOW (approved):
-    1. Create page -> Wait up to 120 sec for URL to stabilize -> Capture correct URL
-    2. IMMEDIATELY share to profile while still on the page (no need to search later)
-    3. Then move to create next page
+    MULTI-PROFILE ROTATION FLOW:
+    1. Login with first creator profile
+    2. Create pages (up to PAGES_PER_PROFILE limit, default 3-4)
+    3. After limit reached: logout → login with next profile
+    4. Continue creating remaining pages
+    5. Repeat until all pages created or all profiles exhausted
 
-    This ensures we capture the correct URL and share while the page is still active.
+    This ensures we don't hit rate limits by rotating between profiles.
     """
     from automation.selenium_driver import FacebookPageGenerator
     from django.conf import settings
@@ -84,46 +86,94 @@ def run_task_sync(task_id: str):
     timeout = getattr(settings, 'SELENIUM_TIMEOUT', 30)
     test_mode = getattr(settings, 'SELENIUM_TEST_MODE', False)
 
-    # Get hardcoded creator profile credentials from settings
-    creator_email = getattr(settings, 'CREATOR_PROFILE_EMAIL', '')
-    creator_password = getattr(settings, 'CREATOR_PROFILE_PASSWORD', '')
+    # Get pages per profile before rotation (default: 3)
+    pages_per_profile = getattr(settings, 'PAGES_PER_PROFILE', 3)
+
+    # Get list of creator profiles for rotation
+    # Format: [{'email': 'x@x.com', 'password': 'xxx', 'name': 'Profile 1'}, ...]
+    creator_profiles = getattr(settings, 'CREATOR_PROFILES', [])
+
+    # Fallback to single profile if no rotation profiles configured
+    if not creator_profiles:
+        creator_email = getattr(settings, 'CREATOR_PROFILE_EMAIL', '')
+        creator_password = getattr(settings, 'CREATOR_PROFILE_PASSWORD', '')
+        if creator_email and creator_password:
+            creator_profiles = [{
+                'email': creator_email,
+                'password': creator_password,
+                'name': 'Default Profile',
+                'pages_per_session': pages_per_profile
+            }]
 
     # Get the public profile URL to share pages to (from the task/form)
     public_profile_url = task.get('public_profile_url', '')
 
     try:
-        with FacebookPageGenerator(headless=headless, timeout=timeout, test_mode=test_mode) as generator:
-            # Login to Facebook using the hardcoded creator profile
-            if creator_email and creator_password and not test_mode:
-                login_success = generator.login_facebook(
-                    email=creator_email,
-                    password=creator_password
-                )
+        with FacebookPageGenerator(
+            headless=headless,
+            timeout=timeout,
+            test_mode=test_mode,
+            pages_per_profile=pages_per_profile
+        ) as generator:
+
+            # Set up multi-profile rotation
+            if creator_profiles and not test_mode:
+                generator.set_profiles(creator_profiles)
+                print(f">>> MULTI-PROFILE MODE: {len(creator_profiles)} profiles configured")
+                print(f">>> Pages per profile before rotation: {pages_per_profile}")
+
+                # Login with first profile
+                login_success = generator.login_with_rotation()
                 if not login_success:
-                    update_task_status(task_id, 'failed', error_message='Facebook login failed')
+                    update_task_status(task_id, 'failed', error_message='Facebook login failed for all profiles')
                     return
+            elif not test_mode:
+                update_task_status(task_id, 'failed', error_message='No creator profiles configured')
+                return
 
-            # NEW FLOW: Create page -> Wait for URL -> Capture URL -> Share immediately -> Next page
-            # Natural flow - no artificial delays
+            # Track current profile for logging
+            current_profile_email = generator.current_profile_email
 
+            # Create pages with profile rotation
             for i in range(1, task['num_pages'] + 1):
                 current = get_task(task_id)
                 if current and current.get('status') == 'cancelled':
+                    print(">>> Task cancelled by user")
                     break
+
+                # Check if we should rotate to next profile before creating page
+                if not test_mode and generator.should_rotate_profile():
+                    print(f">>> ROTATION: Profile {current_profile_email} reached page limit")
+                    rotation_status = generator.get_rotation_status()
+                    print(f">>> Status: {rotation_status}")
+
+                    if generator.has_more_profiles():
+                        rotated = generator.rotate_to_next_profile()
+                        if rotated:
+                            current_profile_email = generator.current_profile_email
+                            print(f">>> ROTATION: Switched to profile: {current_profile_email}")
+                        else:
+                            print(">>> ROTATION: Failed to rotate, continuing with current profile")
+                    else:
+                        print(">>> ROTATION: No more profiles available, continuing with current")
 
                 # Generate page name with 70% female / 30% male distribution
                 page_name, gender = get_page_name_for_sequence(
                     task['base_page_name'], i, task['num_pages']
                 )
 
-                print(f">>> Creating page {i}/{task['num_pages']}: {page_name}")
+                print(f">>> [{current_profile_email}] Creating page {i}/{task['num_pages']}: {page_name}")
 
                 # STEP 1: Create the page (now waits up to 120 sec for URL to stabilize)
                 result = generator.create_facebook_page(page_name)
 
                 if result.success:
+                    # Track page count for rotation
+                    generator.increment_page_count()
+
                     # STEP 2: Store page details with the correct URL
-                    store_page_details(
+                    # store_page_details validates URL - returns None if invalid
+                    stored_id = store_page_details(
                         task_id=task_id,
                         page_id=result.page_id,
                         page_name=result.page_name,
@@ -131,7 +181,16 @@ def run_task_sync(task_id: str):
                         sequence_num=i,
                         gender=gender
                     )
-                    increment_task_counter(task_id, 'pages_created')
+
+                    if stored_id:
+                        # Page stored successfully with valid URL
+                        increment_task_counter(task_id, 'pages_created')
+                        print(f">>> ✓ Page '{page_name}' stored in database with ID: {result.page_id}")
+                    else:
+                        # URL was invalid - page not stored
+                        increment_task_counter(task_id, 'pages_failed')
+                        print(f">>> ✗ Page '{page_name}' NOT stored - invalid URL: {result.page_url}")
+                        continue  # Skip to next page, don't try to share
 
                     # STEP 3: IMMEDIATELY share to profile (while still on the page)
                     # This is done right after page creation to avoid searching for the page later
@@ -151,7 +210,7 @@ def run_task_sync(task_id: str):
                                 invitee_email=public_profile_url,
                                 invite_link=invite_result.invite_link,
                                 role='admin',
-                                invited_by=creator_email
+                                invited_by=current_profile_email
                             )
                             increment_task_counter(task_id, 'shares_sent')
                             print(f">>> Successfully shared page '{page_name}' to profile")
@@ -161,6 +220,18 @@ def run_task_sync(task_id: str):
                 else:
                     increment_task_counter(task_id, 'pages_failed')
                     print(f">>> Failed to create page '{page_name}': {result.error}")
+
+                    # Check if rate limited - rotate if so
+                    if generator.rate_limited and not test_mode:
+                        print(">>> Rate limit detected! Attempting profile rotation...")
+                        if generator.has_more_profiles():
+                            generator.rotate_to_next_profile()
+                            current_profile_email = generator.current_profile_email
+
+            # Log final rotation status
+            if not test_mode:
+                final_status = generator.get_rotation_status()
+                print(f">>> TASK COMPLETE. Final rotation status: {final_status}")
 
         update_task_status(task_id, 'completed')
     except Exception as e:

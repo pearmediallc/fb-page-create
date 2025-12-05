@@ -8,6 +8,8 @@ import uuid
 import re
 import json
 import os
+import subprocess
+import platform
 from typing import Optional
 from dataclasses import dataclass
 from selenium import webdriver
@@ -49,6 +51,15 @@ class InviteResult:
     error: str = ""
 
 
+@dataclass
+class ProfileCredentials:
+    """Facebook profile credentials for multi-profile rotation"""
+    email: str
+    password: str
+    name: str = ""
+    pages_per_session: int = 3  # Max pages to create before rotating
+
+
 class FacebookPageGenerator:
     """
     Selenium-based Facebook Page generator.
@@ -63,7 +74,8 @@ class FacebookPageGenerator:
     TEST_URL = "https://httpbin.org/forms/post"
 
     def __init__(self, headless: bool = True, timeout: int = 30, test_mode: bool = True,
-                 proxy_url: str = "", cookies_path: str = ""):
+                 proxy_url: str = "", cookies_path: str = "",
+                 profiles: list = None, pages_per_profile: int = 3):
         self.headless = headless
         self.timeout = timeout
         self.test_mode = test_mode
@@ -79,32 +91,67 @@ class FacebookPageGenerator:
             'rate_limit_hits': 0,
         }
 
+        # Multi-profile rotation support
+        self.profiles: list = profiles or []  # List of ProfileCredentials
+        self.current_profile_index: int = 0
+        self.pages_per_profile: int = pages_per_profile  # Pages before rotating
+        self.pages_created_this_session: int = 0  # Pages created with current profile
+        self.current_profile_email: str = ""  # Email of currently logged-in profile
+
     def _get_chrome_options(self) -> Options:
         """Configure Chrome options for Selenium"""
+        import random
         options = Options()
+
+        # Headless mode
         if self.headless:
             options.add_argument("--headless=new")
+
+        # Essential stability options
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
+
+        # Disable features that can cause crashes
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        # Disable notifications
         options.add_argument("--disable-notifications")
-        # Disable Chrome sync/sign-in popup
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-translate")
+        options.add_argument("--disable-background-networking")
         options.add_argument("--disable-sync")
         options.add_argument("--disable-default-apps")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        # Docker/container specific options
+
+        # Anti-detection
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+
+        # Stability options for Docker/containers
         options.add_argument("--disable-setuid-sandbox")
-        options.add_argument("--single-process")
         options.add_argument("--disable-features=VizDisplayCompositor")
-        options.add_argument("--remote-debugging-port=9222")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-renderer-backgrounding")
+
+        # Memory optimization
+        options.add_argument("--disable-features=TranslateUI")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--memory-pressure-off")
+
+        # Use random debugging port to avoid conflicts
+        debug_port = random.randint(9222, 9999)
+        options.add_argument(f"--remote-debugging-port={debug_port}")
+
+        # Crash handling
+        options.add_argument("--crash-dumps-dir=/tmp")
+        options.add_argument("--disable-crash-reporter")
+
+        # NOTE: Removed --single-process as it causes instability
 
         # Add proxy if configured
         if self.proxy_url:
@@ -243,23 +290,78 @@ class FacebookPageGenerator:
         except Exception:
             return False
 
-    def start(self):
-        """Initialize the WebDriver"""
+    def cleanup_chrome_processes(self):
+        """Kill any orphaned Chrome/chromedriver processes to prevent session conflicts"""
         try:
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(
-                service=service,
-                options=self._get_chrome_options()
-            )
-            self.driver.implicitly_wait(10)
-            # Remove webdriver flag
-            self.driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-            logger.info("Chrome WebDriver started successfully")
-        except WebDriverException as e:
-            logger.error(f"Failed to start Chrome driver: {e}")
-            raise RuntimeError(f"Failed to start Chrome driver: {e}")
+            system = platform.system()
+            if system == "Darwin":  # macOS
+                subprocess.run(["pkill", "-9", "-f", "Google Chrome"], capture_output=True)
+                subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True)
+                subprocess.run(["pkill", "-9", "-f", "Chrome Helper"], capture_output=True)
+            elif system == "Linux":
+                subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True)
+                subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True)
+            elif system == "Windows":
+                subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
+                subprocess.run(["taskkill", "/F", "/IM", "chromedriver.exe"], capture_output=True)
+            time.sleep(1)  # Give processes time to terminate
+            print(">>> Cleaned up any orphaned Chrome processes")
+            logger.info("Cleaned up orphaned Chrome processes")
+        except Exception as e:
+            print(f">>> Warning: Could not cleanup Chrome processes: {e}")
+            logger.warning(f"Could not cleanup Chrome processes: {e}")
+
+    def start(self, max_retries: int = 3):
+        """Initialize the WebDriver with retry logic"""
+        # Clean up any orphaned Chrome processes first
+        self.cleanup_chrome_processes()
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                print(f">>> Starting Chrome (attempt {attempt + 1}/{max_retries})...")
+
+                # Get ChromeDriver
+                service = Service(ChromeDriverManager().install())
+
+                # Wait a bit between retries
+                if attempt > 0:
+                    time.sleep(2)
+                    self.cleanup_chrome_processes()
+
+                self.driver = webdriver.Chrome(
+                    service=service,
+                    options=self._get_chrome_options()
+                )
+                self.driver.implicitly_wait(10)
+
+                # Remove webdriver flag
+                self.driver.execute_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
+
+                print(">>> Chrome WebDriver started successfully")
+                logger.info("Chrome WebDriver started successfully")
+                return  # Success!
+
+            except WebDriverException as e:
+                last_error = e
+                print(f">>> Chrome start attempt {attempt + 1} failed: {e}")
+                logger.warning(f"Chrome start attempt {attempt + 1} failed: {e}")
+
+                # Clean up before retry
+                if self.driver:
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
+                    self.driver = None
+
+                self.cleanup_chrome_processes()
+
+        # All retries failed
+        logger.error(f"Failed to start Chrome driver after {max_retries} attempts: {last_error}")
+        raise RuntimeError(f"Failed to start Chrome driver after {max_retries} attempts: {last_error}")
 
     def stop(self):
         """Close the WebDriver"""
@@ -550,6 +652,441 @@ class FacebookPageGenerator:
             import traceback
             traceback.print_exc()
             return False
+
+    def logout_facebook(self) -> bool:
+        """
+        Logout from Facebook account.
+
+        Flow:
+        1. Click close (X) button if on a page (to leave any current page/popup)
+        2. Click "Leave Page" if dialog appears
+        3. Click profile dropdown arrow
+        4. Click "Log out"
+        5. Wait for facebook.com login page to appear
+
+        Returns:
+            True if logout successful, False otherwise
+        """
+        if not self.driver:
+            print(">>> LOGOUT: Driver not initialized")
+            return False
+
+        if self.test_mode:
+            print(">>> TEST MODE: Simulating logout")
+            self.logged_in = False
+            return True
+
+        try:
+            print(">>> LOGOUT STEP 1: Navigating to Facebook home...")
+            self.driver.get("https://www.facebook.com")
+            time.sleep(3)
+
+            # ========================================
+            # STEP 1: Close any open dialogs/popups first
+            # ========================================
+            print(">>> LOGOUT STEP 1b: Closing any open dialogs (clicking X button)...")
+            # From screenshot 15: X button is in top-left corner of page creation form
+            close_selectors = [
+                # X button in top-left (like in page creation form)
+                (By.CSS_SELECTOR, "div[aria-label='Close']"),
+                (By.XPATH, "//div[@aria-label='Close']"),
+                (By.XPATH, "//*[@aria-label='Close']"),
+                (By.XPATH, "//i[contains(@class, 'x1b0d499')]"),  # X icon
+                # SVG close icon
+                (By.CSS_SELECTOR, "svg[aria-label='Close']"),
+                (By.XPATH, "//*[local-name()='svg'][@aria-label='Close']"),
+            ]
+
+            for selector_type, selector_value in close_selectors:
+                try:
+                    elements = self.driver.find_elements(selector_type, selector_value)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            elem.click()
+                            print(f">>> Clicked close (X) button")
+                            time.sleep(2)
+                            break
+                except Exception:
+                    continue
+
+            # ========================================
+            # STEP 2: Handle "Leave Page?" dialog if it appears
+            # From screenshot 16: Dialog has "Stay on Page" and "Leave Page" buttons
+            # ========================================
+            print(">>> LOGOUT STEP 2: Checking for 'Leave Page?' dialog...")
+            time.sleep(1)  # Wait for dialog to appear
+
+            leave_page_selectors = [
+                # Blue "Leave Page" button (from screenshot 16)
+                (By.XPATH, "//span[text()='Leave Page']"),
+                (By.XPATH, "//div[@role='button']//span[text()='Leave Page']"),
+                (By.XPATH, "//span[contains(text(), 'Leave Page')]"),
+                # Also try clicking any button with "Leave" text
+                (By.XPATH, "//div[@role='button'][.//span[text()='Leave Page']]"),
+            ]
+
+            leave_clicked = False
+            for selector_type, selector_value in leave_page_selectors:
+                if leave_clicked:
+                    break
+                try:
+                    elements = self.driver.find_elements(selector_type, selector_value)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            elem.click()
+                            print(f">>> Clicked 'Leave Page' button")
+                            leave_clicked = True
+                            time.sleep(2)
+                            break
+                except Exception:
+                    continue
+
+            if not leave_clicked:
+                print(">>> No 'Leave Page' dialog detected, continuing...")
+
+            # ========================================
+            # STEP 3: Click profile dropdown arrow (account menu)
+            # From screenshot 17: Profile picture is in top right, clicking shows dropdown
+            # with "Kritika Verma", pages, and "Log out" option
+            # ========================================
+            print(">>> LOGOUT STEP 3: Looking for profile dropdown/account menu (top-right corner)...")
+            profile_clicked = False
+
+            # From screenshot 17: The profile dropdown shows profile image in top-right
+            profile_selectors = [
+                # Profile image/avatar that triggers dropdown
+                (By.CSS_SELECTOR, "div[aria-label='Your profile']"),
+                (By.XPATH, "//div[@aria-label='Your profile']"),
+                (By.CSS_SELECTOR, "div[aria-label='Account']"),
+                (By.XPATH, "//div[@aria-label='Account']"),
+                # SVG/image in the header area
+                (By.XPATH, "//div[contains(@class, 'x1iyjqo2')]//image"),
+                # Profile picture clickable div
+                (By.CSS_SELECTOR, "image[preserveAspectRatio='xMidYMid slice']"),
+                (By.XPATH, "//image[@preserveAspectRatio='xMidYMid slice']"),
+                # Account menu button
+                (By.XPATH, "//div[@aria-label='Account Controls and Settings']"),
+            ]
+
+            # Wait up to 10 seconds
+            for attempt in range(10):
+                for selector_type, selector_value in profile_selectors:
+                    if profile_clicked:
+                        break
+                    try:
+                        elements = self.driver.find_elements(selector_type, selector_value)
+                        # Try the last few elements (profile is usually at the right/end)
+                        for elem in elements[-5:]:
+                            if elem.is_displayed():
+                                self.driver.execute_script("arguments[0].click();", elem)
+                                print(f">>> Clicked profile dropdown")
+                                profile_clicked = True
+                                time.sleep(2)
+                                break
+                    except Exception:
+                        continue
+                if profile_clicked:
+                    break
+                time.sleep(1)
+
+            if not profile_clicked:
+                print(">>> WARNING: Could not find profile dropdown, trying direct navigation...")
+                # Try navigating to account settings directly
+                try:
+                    self.driver.get("https://www.facebook.com/")
+                    time.sleep(2)
+                    # Try clicking any clickable image in header
+                    images = self.driver.find_elements(By.TAG_NAME, "image")
+                    for img in images[-5:]:
+                        try:
+                            if img.is_displayed():
+                                img.click()
+                                print(f">>> Clicked profile image fallback")
+                                profile_clicked = True
+                                time.sleep(2)
+                                break
+                        except:
+                            continue
+                except Exception:
+                    pass
+
+            # ========================================
+            # STEP 4: Click "Log out" option
+            # From screenshot 17: "Log out" is in the dropdown menu with an icon
+            # It's at the bottom of the menu after Settings, Help, Display options
+            # ========================================
+            print(">>> LOGOUT STEP 4: Looking for 'Log out' option in dropdown menu...")
+            logout_clicked = False
+
+            # From screenshot 17: "Log out" text in dropdown menu
+            logout_selectors = [
+                # Direct text match for "Log out"
+                (By.XPATH, "//span[text()='Log out']"),
+                (By.XPATH, "//span[text()='Log Out']"),
+                # Menu item containing Log out
+                (By.XPATH, "//div[@role='menuitem']//span[text()='Log out']"),
+                (By.XPATH, "//div[@role='button']//span[text()='Log out']"),
+                # Partial match
+                (By.XPATH, "//span[contains(text(), 'Log out')]"),
+                (By.XPATH, "//span[contains(text(), 'Log Out')]"),
+                # Any clickable element with logout text
+                (By.XPATH, "//*[text()='Log out']"),
+            ]
+
+            # Wait up to 10 seconds for logout option
+            for attempt in range(10):
+                for selector_type, selector_value in logout_selectors:
+                    if logout_clicked:
+                        break
+                    try:
+                        elements = self.driver.find_elements(selector_type, selector_value)
+                        for elem in elements:
+                            if elem.is_displayed():
+                                elem_text = elem.text.strip().lower()
+                                if 'log out' in elem_text or 'logout' in elem_text:
+                                    # Scroll into view and click
+                                    self.driver.execute_script("arguments[0].scrollIntoView(true);", elem)
+                                    time.sleep(0.3)
+                                    self.driver.execute_script("arguments[0].click();", elem)
+                                    print(f">>> Clicked 'Log out' button")
+                                    logout_clicked = True
+                                    time.sleep(3)
+                                    break
+                    except Exception:
+                        continue
+                if logout_clicked:
+                    break
+                time.sleep(1)
+
+            if not logout_clicked:
+                print(">>> WARNING: Could not find 'Log out' option, trying JavaScript...")
+                # Try JavaScript approach to find and click logout
+                try:
+                    result = self.driver.execute_script("""
+                        const spans = document.querySelectorAll('span');
+                        for (let span of spans) {
+                            const text = span.textContent.toLowerCase().trim();
+                            if (text === 'log out' || text === 'logout') {
+                                span.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    """)
+                    if result:
+                        print(">>> Used JavaScript to click logout")
+                        logout_clicked = True
+                        time.sleep(3)
+                    else:
+                        print(">>> JavaScript logout also failed")
+                except Exception as e:
+                    print(f">>> JavaScript logout failed: {e}")
+
+            # ========================================
+            # STEP 5: Verify logout - check if login page appears
+            # ========================================
+            print(">>> LOGOUT STEP 5: Verifying logout...")
+            time.sleep(3)
+
+            current_url = self.driver.current_url.lower()
+            print(f">>> Current URL after logout: {self.driver.current_url}")
+
+            # Check for login page indicators
+            login_indicators = [
+                "//input[@id='email']",
+                "//input[@name='email']",
+                "//button[@name='login']",
+            ]
+
+            logout_successful = False
+            for selector in login_indicators:
+                try:
+                    elem = self.driver.find_element(By.XPATH, selector)
+                    if elem.is_displayed():
+                        logout_successful = True
+                        print(">>> SUCCESS: Logout verified - login page detected")
+                        break
+                except NoSuchElementException:
+                    continue
+
+            if logout_successful or "login" in current_url:
+                self.logged_in = False
+                # Delete cookies to ensure clean state
+                self.driver.delete_all_cookies()
+                print(">>> SUCCESS: Facebook logout complete!")
+                logger.info("Facebook logout successful")
+                return True
+            else:
+                print(">>> WARNING: Logout may not have completed successfully")
+                # Force logout by clearing cookies
+                self.driver.delete_all_cookies()
+                self.logged_in = False
+                return True  # Consider it successful anyway
+
+        except Exception as e:
+            print(f">>> ERROR: Exception during logout: {e}")
+            logger.error(f"Logout error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Try to force logout by clearing cookies
+            try:
+                self.driver.delete_all_cookies()
+                self.logged_in = False
+            except:
+                pass
+            return False
+
+    def set_profiles(self, profiles: list):
+        """
+        Set the list of profiles for rotation.
+
+        Args:
+            profiles: List of ProfileCredentials or list of dicts with 'email', 'password', 'name' keys
+        """
+        self.profiles = []
+        for p in profiles:
+            if isinstance(p, ProfileCredentials):
+                self.profiles.append(p)
+            elif isinstance(p, dict):
+                self.profiles.append(ProfileCredentials(
+                    email=p.get('email', ''),
+                    password=p.get('password', ''),
+                    name=p.get('name', p.get('email', '')),
+                    pages_per_session=p.get('pages_per_session', self.pages_per_profile)
+                ))
+        self.current_profile_index = 0
+        self.pages_created_this_session = 0
+        print(f">>> PROFILES: Set {len(self.profiles)} profiles for rotation")
+        logger.info(f"Set {len(self.profiles)} profiles for rotation")
+
+    def get_current_profile(self) -> Optional[ProfileCredentials]:
+        """Get the current profile to use"""
+        if not self.profiles:
+            return None
+        if self.current_profile_index >= len(self.profiles):
+            return None
+        return self.profiles[self.current_profile_index]
+
+    def should_rotate_profile(self) -> bool:
+        """
+        Check if we should rotate to the next profile.
+
+        Returns True if:
+        - Current profile has created enough pages (pages_per_profile)
+        - Rate limit detected
+        - Page creation error occurred
+        """
+        if not self.profiles or len(self.profiles) <= 1:
+            return False
+
+        current_profile = self.get_current_profile()
+        if not current_profile:
+            return False
+
+        max_pages = current_profile.pages_per_session or self.pages_per_profile
+
+        if self.pages_created_this_session >= max_pages:
+            print(f">>> ROTATION: Profile {self.current_profile_index + 1} has created {self.pages_created_this_session} pages (max: {max_pages})")
+            return True
+
+        if self.rate_limited:
+            print(f">>> ROTATION: Profile {self.current_profile_index + 1} is rate limited")
+            return True
+
+        return False
+
+    def rotate_to_next_profile(self) -> bool:
+        """
+        Logout current profile and login to the next one.
+
+        Returns:
+            True if successfully rotated to next profile, False if no more profiles
+        """
+        if not self.profiles:
+            print(">>> ROTATION: No profiles configured for rotation")
+            return False
+
+        # Logout current profile
+        print(f">>> ROTATION: Logging out profile {self.current_profile_index + 1} ({self.current_profile_email})...")
+        logout_success = self.logout_facebook()
+
+        if not logout_success:
+            print(">>> ROTATION: Logout failed, but continuing with rotation...")
+
+        # Move to next profile
+        self.current_profile_index += 1
+        self.pages_created_this_session = 0
+        self.rate_limited = False
+
+        if self.current_profile_index >= len(self.profiles):
+            print(f">>> ROTATION: All {len(self.profiles)} profiles exhausted, no more profiles available")
+            return False
+
+        # Login to next profile
+        next_profile = self.profiles[self.current_profile_index]
+        print(f">>> ROTATION: Switching to profile {self.current_profile_index + 1} of {len(self.profiles)} ({next_profile.email})...")
+
+        login_success = self.login_facebook(next_profile.email, next_profile.password, use_saved_cookies=False)
+
+        if login_success:
+            self.current_profile_email = next_profile.email
+            print(f">>> ROTATION: Successfully logged in as {next_profile.email}")
+            return True
+        else:
+            print(f">>> ROTATION: Failed to login as {next_profile.email}")
+            # Try next profile recursively
+            return self.rotate_to_next_profile()
+
+    def login_with_rotation(self) -> bool:
+        """
+        Login using the first available profile from the rotation list.
+        If no profiles are set, returns False.
+
+        Returns:
+            True if login successful, False otherwise
+        """
+        if not self.profiles:
+            print(">>> LOGIN: No profiles configured, use login_facebook() with credentials")
+            return False
+
+        current_profile = self.get_current_profile()
+        if not current_profile:
+            print(">>> LOGIN: All profiles exhausted")
+            return False
+
+        print(f">>> LOGIN: Logging in with profile {self.current_profile_index + 1} of {len(self.profiles)} ({current_profile.email})...")
+
+        success = self.login_facebook(current_profile.email, current_profile.password, use_saved_cookies=False)
+
+        if success:
+            self.current_profile_email = current_profile.email
+            return True
+        else:
+            # Try next profile
+            print(f">>> LOGIN: Profile {current_profile.email} failed, trying next...")
+            return self.rotate_to_next_profile()
+
+    def increment_page_count(self):
+        """Call this after successfully creating a page to track count for rotation"""
+        self.pages_created_this_session += 1
+        print(f">>> ROTATION TRACKER: Profile {self.current_profile_index + 1} has created {self.pages_created_this_session}/{self.pages_per_profile} pages this session")
+
+    def has_more_profiles(self) -> bool:
+        """Check if there are more profiles available for rotation"""
+        return self.current_profile_index < len(self.profiles) - 1
+
+    def get_rotation_status(self) -> dict:
+        """Get current rotation status"""
+        current_profile = self.get_current_profile()
+        return {
+            'total_profiles': len(self.profiles),
+            'current_profile_index': self.current_profile_index + 1,
+            'current_profile_email': self.current_profile_email or (current_profile.email if current_profile else 'None'),
+            'pages_created_this_session': self.pages_created_this_session,
+            'pages_per_profile': self.pages_per_profile,
+            'has_more_profiles': self.has_more_profiles(),
+            'should_rotate': self.should_rotate_profile(),
+        }
 
     def create_facebook_page(self, page_name: str, category: str = "Business",
                              description: str = "") -> PageResult:
@@ -987,81 +1524,175 @@ class FacebookPageGenerator:
                 print(f">>> DEBUG: Found {len(divs_with_role)} div[role='button'] elements")
 
             # ========================================
-            # STEP 9: Click buttons with proper timing (Next → Skip → Next → Done)
-            # Manual process takes 3-3.5 minutes, so we need realistic delays
+            # STEP 9: Click buttons with proper timing
+            # Based on manual flow screenshots:
+            # Step 1 of 5: Next → Step 2 of 5: Next → Step 3 of 5: Skip → Step 4 of 5: Next → Step 5 of 5: Done
             # ========================================
-            print(">>> PAGE CREATION STEP 9: Clicking buttons (Next → Skip → Next → Done)...")
+            print(">>> PAGE CREATION STEP 9: Clicking buttons (Next → Next → Skip → Next → Done)...")
+            print(">>> Following exact manual flow with human-like timing...")
 
-            # Wait 5 seconds after Create Page click for form to process
-            time.sleep(5)
+            # Wait for page to fully load after Create Page click
+            time.sleep(8)
 
-            # Correct button order: Next → Skip → Next → Done
-            # Using CSS selector with exact Facebook classes
-            button_css = "span.x1lliihq.x6ikm8r.x10wlt62.x1n2onr6.xlyipyv.xuxw1ft"
-            button_order = ["Next", "Skip", "Next", "Done"]
+            # CORRECT button order based on screenshots:
+            # Step 1: Next, Step 2: Next, Step 3: Skip, Step 4: Next, Step 5: Done
+            button_order = ["Next", "Next", "Skip", "Next", "Done"]
 
-            # Wait times after each button click (in seconds)
+            # Human-like wait times after each button (seconds)
+            # A human takes 3-5 seconds to look at each page before clicking
             button_wait_times = {
-                "Next": 8,   # Wait 8 sec after first Next
-                "Skip": 8,   # Wait 8 sec after Skip
-                "Done": 5    # Wait 5 sec after Done before checking redirect
+                "Next": 5,    # Wait 5 sec after Next (human looks at page)
+                "Skip": 5,    # Wait 5 sec after Skip
+                "Done": 8     # Wait 8 sec after Done for final redirect
             }
 
-            for button_name in button_order:
-                clicked = False
-                # Try up to 30 times over 15 seconds to find the button
-                max_attempts = 30
+            def wait_for_page_stable(timeout=5):
+                """Wait for page to be stable (no loading indicators)"""
+                try:
+                    # Wait for any loading spinners to disappear
+                    time.sleep(2)
+                    # Check if page is still loading
+                    for _ in range(timeout):
+                        ready_state = self.driver.execute_script("return document.readyState")
+                        if ready_state == "complete":
+                            return True
+                        time.sleep(1)
+                except:
+                    pass
+                return True
+
+            def find_and_click_button(button_text, step_num):
+                """Find and click button with human-like behavior"""
+                print(f">>>   Step {step_num}: Looking for '{button_text}' button...")
+
+                # Wait for page to be stable first
+                wait_for_page_stable()
+
+                # Switch to default content
+                self.driver.switch_to.default_content()
+
+                # XPath selectors for the button (blue buttons at bottom of form)
+                xpaths = [
+                    f"//span[text()='{button_text}']",
+                    f"//div[@role='button']//span[text()='{button_text}']",
+                ]
+
+                # Try for up to 20 seconds
+                max_attempts = 20
                 for attempt in range(max_attempts):
-                    try:
-                        elements = self.driver.find_elements(By.CSS_SELECTOR, button_css)
-                        for elem in elements:
-                            if elem.is_displayed() and elem.text == button_name:
-                                # Scroll element into view first
-                                self.driver.execute_script("arguments[0].scrollIntoView(true);", elem)
-                                time.sleep(0.3)
-                                self.driver.execute_script("arguments[0].click();", elem)
-                                print(f">>> Clicked '{button_name}' (attempt {attempt + 1})")
-                                clicked = True
-                                # Wait appropriate time after this button
-                                wait_time = button_wait_times.get(button_name, 5)
-                                print(f">>> Waiting {wait_time} seconds for next step...")
-                                time.sleep(wait_time)
-                                break
-                        if clicked:
-                            break
-                    except Exception as e:
-                        print(f">>> Attempt {attempt + 1}: {button_name} not ready yet...")
-                    time.sleep(0.5)  # Wait 0.5 sec between attempts
+                    for xpath in xpaths:
+                        try:
+                            elements = self.driver.find_elements(By.XPATH, xpath)
+                            for elem in elements:
+                                if elem.is_displayed():
+                                    # Human-like: scroll to button first
+                                    self.driver.execute_script(
+                                        "arguments[0].scrollIntoView({block: 'center'});", elem
+                                    )
+                                    time.sleep(0.5)  # Human pause before clicking
 
-                if not clicked:
-                    print(f">>> WARNING: '{button_name}' not found after {max_attempts} attempts")
+                                    # Click using JavaScript (more reliable)
+                                    self.driver.execute_script("arguments[0].click();", elem)
+                                    print(f">>>   ✓ Clicked '{button_text}' button")
+                                    return True
+                        except Exception as e:
+                            pass
+
+                    # Wait 1 second before trying again
+                    time.sleep(1)
+                    if attempt % 5 == 4:
+                        print(f">>>   Still looking for '{button_text}'... ({attempt + 1}s)")
+
+                print(f">>>   ✗ '{button_text}' not found after {max_attempts} seconds")
+                return False
+
+            # Click each button in sequence with human-like timing
+            step_num = 1
+            for button_name in button_order:
+                print(f">>> Step {step_num} of 5:")
+
+                clicked = find_and_click_button(button_name, step_num)
+
+                if clicked:
+                    wait_time = button_wait_times.get(button_name, 5)
+                    print(f">>>   Waiting {wait_time}s for next page to load...")
+                    time.sleep(wait_time)
+                else:
+                    print(f">>>   WARNING: Could not click '{button_name}', continuing...")
+
+                step_num += 1
 
             # ========================================
-            # STEP 9.5: Wait 2 MINUTES for page redirect (do nothing, just wait)
-            # Page will automatically redirect to: https://www.facebook.com/profile.php?id=NUMBER
+            # STEP 9.5: Wait for "Professional dashboard" to appear
+            # This indicates the page is fully created and URL is correct
+            # Capture URL IMMEDIATELY when we see Professional dashboard
             # ========================================
-            print(">>> PAGE CREATION STEP 9.5: Waiting 2 minutes for page redirect (no clicking)...")
+            print(">>> PAGE CREATION STEP 9.5: Waiting for 'Professional dashboard' to appear...")
+            print(">>> This confirms page is created - will capture URL immediately when seen...")
 
-            max_wait = 120  # 2 minutes
-            start_wait = time.time()
             page_url_found = False
+            captured_url = None
+            max_wait_time = 60  # 1 minute max (reduced from 2 min)
+            check_interval = 2  # Check every 2 seconds
 
-            while (time.time() - start_wait) < max_wait:
+            # Indicators that page is fully created
+            page_created_indicators = [
+                "Professional dashboard",
+                "Manage Page",
+                "Edit Page",
+                "Page settings",
+            ]
+
+            for elapsed in range(0, max_wait_time, check_interval):
+                try:
+                    # First check if URL already has profile.php?id=
+                    current_url = self.driver.current_url
+                    if "profile.php?id=" in current_url:
+                        # URL is correct, but let's also verify page is loaded
+                        page_source = self.driver.page_source
+                        for indicator in page_created_indicators:
+                            if indicator in page_source:
+                                captured_url = current_url
+                                page_url_found = True
+                                print(f">>> [{elapsed}s] ✓ Found '{indicator}' - Page created!")
+                                print(f">>> ✓ Captured URL: {captured_url}")
+                                break
+                        if page_url_found:
+                            break
+
+                    # Also check page source for indicators even if URL hasn't changed yet
+                    page_source = self.driver.page_source
+                    for indicator in page_created_indicators:
+                        if indicator in page_source:
+                            # Found indicator! Capture URL NOW
+                            captured_url = self.driver.current_url
+                            if "profile.php?id=" in captured_url:
+                                page_url_found = True
+                                print(f">>> [{elapsed}s] ✓ Found '{indicator}' on page!")
+                                print(f">>> ✓ Captured URL immediately: {captured_url}")
+                                break
+                    if page_url_found:
+                        break
+
+                    print(f">>> [{elapsed}s] Waiting for page to load... URL: {current_url[:60]}...")
+                    time.sleep(check_interval)
+
+                except Exception as e:
+                    print(f">>> Warning during wait: {e}")
+                    time.sleep(check_interval)
+
+            # Final check if not found yet
+            if not page_url_found:
                 current_url = self.driver.current_url
-                elapsed = int(time.time() - start_wait)
-
-                # Check if redirected to page URL (profile.php?id=NUMBER)
+                print(f">>> After {max_wait_time}s wait, URL is: {current_url}")
                 if "profile.php?id=" in current_url:
-                    print(f">>> SUCCESS! Page created! Redirected after {elapsed} seconds")
-                    print(f">>> Page URL: {current_url}")
+                    captured_url = current_url
                     page_url_found = True
-                    break
+                    print(f">>> ✓ URL contains page ID: {current_url}")
 
-                # Log progress every 30 seconds
-                if elapsed % 30 == 0 and elapsed > 0:
-                    print(f">>> [{elapsed}s] Still waiting for redirect... Current URL: {current_url}")
-
-                time.sleep(2)  # Check every 2 seconds, but don't click anything
+            # Use captured URL if we got it
+            if captured_url:
+                current_url = captured_url
 
             # ========================================
             # STEP 10: Extract page ID from current URL
@@ -1101,11 +1732,15 @@ class FacebookPageGenerator:
 
             duration = time.time() - start_time
 
-            # Success if: Create button clicked AND redirected to page (page_url_found)
-            if create_clicked and page_url_found:
+            # Success if: Create button clicked AND we have a page_id (numeric ID extracted from URL)
+            # URL should be: profile.php?id=NUMBER
+            has_page_id = page_id and page_id.isdigit() and len(page_id) > 8
+
+            if create_clicked and has_page_id:
                 self.metrics['pages_created'] += 1
                 self.metrics['total_time'] += duration
-                print(f">>> SUCCESS: Page created! Name: {page_name}, URL: {current_url}")
+                print(f">>> SUCCESS: Page created! Name: {page_name}, ID: {page_id}")
+                print(f">>> Page URL: {current_url}")
                 logger.info(f"Page created successfully: {page_name} (ID: {page_id})")
                 return PageResult(
                     success=True,
@@ -1120,8 +1755,8 @@ class FacebookPageGenerator:
                 error_msg = "Page creation failed"
                 if not create_clicked:
                     error_msg = "Could not click Create Page button"
-                elif not page_url_found:
-                    error_msg = "Page creation not confirmed - did not redirect to page"
+                elif not has_page_id:
+                    error_msg = f"No page ID found in URL: {current_url}"
 
                 print(f">>> FAILED: {error_msg}")
                 logger.error(f"Page creation failed for {page_name}: {error_msg}")
@@ -1505,25 +2140,96 @@ class FacebookPageGenerator:
                         continue
 
             # ========================================
+            # STEP 3b: Handle "Start with tour" popup if it appears
+            # Sometimes FB shows a tour popup after clicking Professional dashboard
+            # ========================================
+            print(">>> INVITE STEP 3b: Checking for 'Start with tour' popup...")
+            time.sleep(2)  # Wait for popup to appear
+
+            tour_handled = False
+            tour_selectors = [
+                (By.XPATH, "//span[text()='Start with tour']"),
+                (By.XPATH, "//span[contains(text(), 'Start with tour')]"),
+                (By.XPATH, "//div[@role='button']//span[text()='Start with tour']"),
+                # Also check for "Skip" or "Not now" buttons to dismiss tour
+                (By.XPATH, "//span[text()='Skip']"),
+                (By.XPATH, "//span[text()='Not now']"),
+                (By.XPATH, "//span[text()='Skip tour']"),
+            ]
+
+            for selector_type, selector_value in tour_selectors:
+                try:
+                    elements = self.driver.find_elements(selector_type, selector_value)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            elem.click()
+                            print(f">>> Clicked tour button: {selector_value}")
+                            tour_handled = True
+                            time.sleep(2)  # Wait for tour to start/close
+                            break
+                    if tour_handled:
+                        break
+                except Exception:
+                    continue
+
+            if not tour_handled:
+                print(">>> No 'Start with tour' popup detected, proceeding directly to Page access...")
+            else:
+                # If tour started, we may need to skip through it or close it
+                print(">>> Tour started, looking for way to proceed...")
+                time.sleep(2)
+                # Try to find and click any close/skip buttons that might appear
+                skip_selectors = [
+                    (By.XPATH, "//span[text()='Skip']"),
+                    (By.XPATH, "//span[text()='Done']"),
+                    (By.XPATH, "//span[text()='Got it']"),
+                    (By.XPATH, "//div[@aria-label='Close']"),
+                    (By.XPATH, "//*[@aria-label='Close']"),
+                ]
+                for selector_type, selector_value in skip_selectors:
+                    try:
+                        elem = self.driver.find_element(selector_type, selector_value)
+                        if elem.is_displayed():
+                            elem.click()
+                            print(f">>> Clicked to proceed past tour: {selector_value}")
+                            time.sleep(2)
+                            break
+                    except Exception:
+                        continue
+
+            # ========================================
             # STEP 4: Find "Page access" under "Your Page tools" (right side)
+            # From screenshot: Right side shows "Your Page tools" section with "Page access" as first item
             # ========================================
             print(">>> INVITE STEP 4: Looking for 'Page access' under 'Your Page tools'...")
             page_access_clicked = False
+
+            # First scroll down slightly to make sure "Your Page tools" section is visible
+            try:
+                self.driver.execute_script("window.scrollBy(0, 300);")
+                time.sleep(1)
+            except:
+                pass
+
             page_access_selectors = [
-                # Direct text match
+                # Direct text match for "Page access"
                 (By.XPATH, "//span[text()='Page access']"),
-                (By.XPATH, "//span[contains(text(), 'Page access')]"),
                 (By.XPATH, "//div[text()='Page access']"),
-                # Under "Your Page tools" section
-                (By.XPATH, "//span[contains(text(), 'Your Page tools')]/following::span[text()='Page access']"),
-                (By.XPATH, "//div[contains(text(), 'Your Page tools')]/following::span[text()='Page access']"),
-                # Clickable div/link
-                (By.XPATH, "//div[@role='button']//span[text()='Page access']"),
-                (By.XPATH, "//a[contains(@href, 'page_access')]"),
+                # Look for the description text and click parent
+                (By.XPATH, "//span[contains(text(), 'Invite people to help manage')]"),
+                # Link-style selectors
+                (By.XPATH, "//a[.//span[text()='Page access']]"),
+                (By.XPATH, "//div[@role='link'][.//span[text()='Page access']]"),
+                # Div with the icon and text
+                (By.XPATH, "//div[contains(@class, 'x1i10hfl')][.//span[text()='Page access']]"),
+                # Find by partial text match
+                (By.XPATH, "//span[contains(text(), 'Page access')]"),
+                # Under "Your Page tools" section header
+                (By.XPATH, "//*[contains(text(), 'Your Page tools')]/following::*[contains(text(), 'Page access')][1]"),
             ]
 
-            # Wait up to 10 seconds for Page access to appear
-            max_wait = 10
+            # Wait up to 15 seconds for Page access to appear
+            max_wait = 15
             start_wait = time.time()
             while (time.time() - start_wait) < max_wait and not page_access_clicked:
                 for selector_type, selector_value in page_access_selectors:
@@ -1531,20 +2237,31 @@ class FacebookPageGenerator:
                         elements = self.driver.find_elements(selector_type, selector_value)
                         for elem in elements:
                             if elem.is_displayed():
-                                elem.click()
+                                elem_text = elem.text.strip()
+                                print(f">>> Found element: '{elem_text}'")
+                                # Click using JavaScript for reliability
+                                self.driver.execute_script("arguments[0].click();", elem)
                                 print(f">>> Clicked 'Page access'")
                                 page_access_clicked = True
-                                time.sleep(2)
+                                time.sleep(3)
                                 break
                         if page_access_clicked:
                             break
-                    except Exception:
+                    except Exception as e:
                         continue
                 if not page_access_clicked:
                     time.sleep(1)
 
             if not page_access_clicked:
-                print(">>> WARNING: Could not find 'Page access', continuing anyway...")
+                print(">>> WARNING: Could not find 'Page access', trying Settings menu...")
+                # Fallback: Try to navigate via Settings
+                try:
+                    settings_url = f"https://www.facebook.com/settings/?tab=page_management_access"
+                    self.driver.get(settings_url)
+                    time.sleep(3)
+                    print(">>> Navigated to page access settings directly")
+                except:
+                    pass
 
             # ========================================
             # STEP 4b: Switch to new tab (Page access opens in new tab)
@@ -1642,20 +2359,27 @@ class FacebookPageGenerator:
 
             # ========================================
             # STEP 7: Find input field and paste profile URL
+            # From screenshot 11: Input says "Who should have Facebook access to this Page?"
             # ========================================
             print(">>> INVITE STEP 7: Looking for person search input...")
+            time.sleep(2)  # Wait for modal to fully load
             person_input = None
             input_selectors = [
-                # Using exact selector from Facebook: aria-label="Search by name or email address..."
-                (By.CSS_SELECTOR, "input[aria-label='Search by name or email address...']"),
-                (By.CSS_SELECTOR, "input[type='search'][placeholder*='Search by name']"),
+                # From screenshot: placeholder/label contains "Who should have Facebook access"
+                (By.CSS_SELECTOR, "input[placeholder*='Who should have']"),
+                (By.CSS_SELECTOR, "input[aria-label*='Who should have']"),
+                # Search input field
                 (By.CSS_SELECTOR, "input[type='search']"),
+                (By.CSS_SELECTOR, "input[role='combobox']"),
+                # Generic search selectors
+                (By.CSS_SELECTOR, "input[aria-label*='Search']"),
+                (By.CSS_SELECTOR, "input[placeholder*='Search']"),
                 (By.CSS_SELECTOR, "input[aria-label*='name']"),
-                (By.CSS_SELECTOR, "input[aria-label*='person']"),
                 (By.CSS_SELECTOR, "input[placeholder*='name']"),
-                (By.CSS_SELECTOR, "input[placeholder*='Name']"),
-                (By.CSS_SELECTOR, "input[type='text'][autocomplete='off']"),
-                (By.XPATH, "//input[@type='search']"),
+                # Any visible text input in the dialog
+                (By.XPATH, "//div[@role='dialog']//input[@type='text']"),
+                (By.XPATH, "//div[@role='dialog']//input[@type='search']"),
+                (By.XPATH, "//input[contains(@class, 'x1i10hfl')]"),
             ]
 
             for selector_type, selector_value in input_selectors:

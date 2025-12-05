@@ -179,9 +179,68 @@ def delete_task(task_id: str) -> bool:
 # Page Operations
 # ===========================================
 
+def is_valid_page_url(page_url: str) -> bool:
+    """
+    Validate that the URL is a valid Facebook page URL.
+    Valid formats:
+    - https://www.facebook.com/profile.php?id=XXXXXXXXXX (numeric ID)
+    - https://www.facebook.com/PAGENAME (page username)
+
+    Invalid URLs (should NOT be stored):
+    - https://www.facebook.com/help/...
+    - https://www.facebook.com/ (homepage)
+    - https://www.facebook.com/latest/home...
+    - https://www.facebook.com/pages/creation/...
+    """
+    if not page_url or not isinstance(page_url, str):
+        return False
+
+    # Must be a Facebook URL
+    if "facebook.com" not in page_url:
+        return False
+
+    # Invalid patterns - these are NOT page URLs
+    invalid_patterns = [
+        "/help/",
+        "/latest/",
+        "/pages/creation",
+        "/pages/create",
+        "facebook.com/$",  # Just homepage
+    ]
+
+    for pattern in invalid_patterns:
+        if pattern in page_url:
+            return False
+
+    # Check for homepage (just facebook.com with nothing after)
+    if page_url.rstrip('/') in ["https://www.facebook.com", "https://facebook.com",
+                                 "http://www.facebook.com", "http://facebook.com"]:
+        return False
+
+    # Valid pattern 1: profile.php?id=NUMERIC_ID
+    if "profile.php?id=" in page_url:
+        # Extract the ID and verify it's numeric
+        import re
+        match = re.search(r'profile\.php\?id=(\d+)', page_url)
+        if match and len(match.group(1)) >= 8:  # FB IDs are typically 14+ digits
+            return True
+
+    # Valid pattern 2: facebook.com/PAGENAME (but not system pages)
+    # This would be for pages with custom usernames
+
+    return False
+
+
 def store_page_details(task_id: str, page_id: str, page_name: str, page_url: str,
                        sequence_num: int, gender: str = None) -> str:
-    """Store created page details"""
+    """Store created page details with URL validation"""
+
+    # Validate URL before storing
+    if not is_valid_page_url(page_url):
+        print(f">>> STORAGE WARNING: Invalid page URL '{page_url}' - NOT storing page '{page_name}'")
+        print(f">>> Valid URLs should be: facebook.com/profile.php?id=XXXXXXXXXX")
+        return None
+
     with _lock:
         doc_id = _generate_id()
         _pages[doc_id] = {
@@ -196,7 +255,8 @@ def store_page_details(task_id: str, page_id: str, page_name: str, page_url: str
             "creation_time": get_ist_now(),
         }
         _save_data()
-        print(f">>> STORAGE: Saved page '{page_name}' to database")
+        print(f">>> STORAGE: ✓ Saved page '{page_name}' (ID: {page_id}) to database")
+        print(f">>> STORAGE: URL: {page_url}")
         return doc_id
 
 
