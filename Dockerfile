@@ -14,16 +14,14 @@ RUN apt-get update && apt-get install -y \
     unzip \
     xvfb \
     libxi6 \
-    libgconf-2-4 \
     libnss3 \
     libxss1 \
-    libasound2 \
+    libasound2t64 \
     libatk-bridge2.0-0 \
     libgtk-3-0 \
     libdrm2 \
     libgbm1 \
     fonts-liberation \
-    libappindicator3-1 \
     xdg-utils \
     # Install Node.js
     nodejs \
