@@ -11,7 +11,7 @@ SECRET_KEY = 'django-insecure-((p#dw&!u17r($a=pu1217^-+cmctvs7#=wu)&!p_0r1lbl$^x
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'fb-page-create.onrender.com', '.onrender.com']
 
 INSTALLED_APPS = [
     'django.contrib.admin',

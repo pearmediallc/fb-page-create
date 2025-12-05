@@ -967,21 +967,14 @@ class FacebookPageGenerator:
                     print(f">>> '{button_name}' not found, continuing...")
 
             # ========================================
-            # STEP 9.5: Wait for redirect (SMART - max 30 sec, exit early if found)
+            # STEP 9.5: Wait for redirect to Professional Dashboard (max 60 sec, exit early)
             # ========================================
-            print(">>> PAGE CREATION STEP 9.5: Waiting for page URL (max 30 sec)...")
+            print(">>> PAGE CREATION STEP 9.5: Waiting for Professional Dashboard (max 60 sec)...")
 
-            # URLs that indicate successful page creation
-            success_url_patterns = [
-                "profile.php?id=",
-                "/professional_dashboard",
-            ]
-
-            max_wait = 30  # Max 30 seconds (not 2 min)
+            max_wait = 60  # Max 60 seconds
             start_wait = time.time()
             current_url = self.driver.current_url
             page_url_found = False
-            professional_dashboard_found = False
 
             print(f">>> Starting URL: {current_url}")
 
@@ -989,7 +982,7 @@ class FacebookPageGenerator:
                 current_url = self.driver.current_url
                 elapsed = int(time.time() - start_wait)
 
-                # Check for Professional Dashboard span
+                # Check for Professional Dashboard span (primary success indicator)
                 try:
                     dashboard_selectors = [
                         "//span[text()='Professional dashboard']",
@@ -1001,7 +994,6 @@ class FacebookPageGenerator:
                             dashboard_elem = self.driver.find_element(By.XPATH, selector)
                             if dashboard_elem.is_displayed():
                                 print(f">>> SUCCESS! Found 'Professional Dashboard' after {elapsed} seconds")
-                                professional_dashboard_found = True
                                 page_url_found = True
                                 break
                         except NoSuchElementException:
@@ -1009,295 +1001,68 @@ class FacebookPageGenerator:
                 except Exception:
                     pass
 
-                if professional_dashboard_found:
-                    break
-
-                # Check if we've landed on a success URL
-                for pattern in success_url_patterns:
-                    if pattern in current_url.lower():
-                        print(f">>> SUCCESS! Redirected to page URL after {elapsed} seconds")
-                        print(f">>> Final URL: {current_url}")
-                        page_url_found = True
-                        break
-
                 if page_url_found:
                     break
 
-                # Check if still on creation page
+                # Check if URL contains page ID (profile.php?id= or numeric path)
+                if "profile.php?id=" in current_url or re.search(r'facebook\.com/\d+', current_url):
+                    print(f">>> SUCCESS! Redirected to page URL after {elapsed} seconds")
+                    page_url_found = True
+                    break
+
+                # Check if no longer on creation page
                 still_on_creation = any(cu in current_url.lower() for cu in creation_urls)
+                if not still_on_creation and "facebook.com" in current_url and "/pages/" not in current_url:
+                    print(f">>> URL changed to: {current_url}")
+                    page_url_found = True
+                    break
 
-                if not still_on_creation and "facebook.com" in current_url:
-                    # URL changed but not to expected pattern - might still be valid
-                    print(f">>> [{elapsed}s] URL changed to: {current_url}")
-                    # Wait a bit more to see if it stabilizes
-                    time.sleep(3)
-                    current_url = self.driver.current_url
-                    if current_url == self.driver.current_url:  # URL stabilized
-                        print(f">>> URL stabilized at: {current_url}")
-                        page_url_found = True
-                        break
-
-                # Log progress every 15 seconds
-                if elapsed % 15 == 0 and elapsed > 0:
-                    print(f">>> [{elapsed}s] Still waiting for Professional Dashboard... Current URL: {current_url}")
+                # Log progress every 20 seconds
+                if elapsed % 20 == 0 and elapsed > 0:
+                    print(f">>> [{elapsed}s] Waiting for redirect... Current URL: {current_url}")
 
                 time.sleep(2)  # Check every 2 seconds
 
             # ========================================
-            # STEP 10: Capture the final page URL
+            # STEP 10: Extract page ID from current URL (simple approach)
             # ========================================
-            print(">>> PAGE CREATION STEP 10: Capturing final page URL...")
+            print(">>> PAGE CREATION STEP 10: Extracting page ID from URL...")
             current_url = self.driver.current_url
-            print(f">>> Final URL after wait: {current_url}")
+            print(f">>> Current URL: {current_url}")
 
-            # If still on creation page, try to find and click any remaining buttons
-            still_on_creation = any(cu in current_url.lower() for cu in creation_urls)
-            if still_on_creation:
-                print(">>> Still on creation page, looking for Go to Page or View Page button...")
-                go_to_page_selectors = [
-                    "//span[text()='Go to Page']",
-                    "//span[contains(text(), 'Go to Page')]",
-                    "//span[text()='View Page']",
-                    "//span[contains(text(), 'View Page')]",
-                    "//a[contains(text(), 'Go to Page')]",
-                    "//a[contains(text(), 'View Page')]",
-                    "//div[@role='button']//span[text()='Go to Page']",
-                ]
-                for selector in go_to_page_selectors:
-                    try:
-                        btn = self.driver.find_element(By.XPATH, selector)
-                        if btn.is_displayed() and btn.is_enabled():
-                            btn.click()
-                            print(f">>> Clicked 'Go to Page' button")
-                            time.sleep(2)  # Reduced from 5s
-                            current_url = self.driver.current_url
-                            break
-                    except NoSuchElementException:
-                        continue
-
-            # Handle Meta Business Suite redirect
-            if "business.facebook.com" in current_url.lower():
-                print(">>> Detected Meta Business Suite redirect, extracting page ID...")
-                # Try to extract page ID from Business Suite URL
-                # Format: business.facebook.com/latest/home?asset_id=PAGE_ID
-                asset_match = re.search(r'asset_id=(\d+)', current_url)
-                if asset_match:
-                    extracted_page_id = asset_match.group(1)
-                    current_url = f"https://www.facebook.com/{extracted_page_id}"
-                    print(f">>> Extracted page URL from Business Suite: {current_url}")
-                else:
-                    # Try to navigate to the page directly
-                    print(">>> Could not extract page ID from Business Suite URL")
-                    # Look for page link in the Business Suite interface
-                    try:
-                        page_link_selectors = [
-                            "//a[contains(@href, 'facebook.com/') and not(contains(@href, 'business.'))]",
-                            "//a[contains(@href, '/profile/')]",
-                        ]
-                        for selector in page_link_selectors:
-                            try:
-                                link = self.driver.find_element(By.XPATH, selector)
-                                href = link.get_attribute('href')
-                                if href and 'facebook.com' in href and 'business.' not in href:
-                                    current_url = href
-                                    print(f">>> Found page link in Business Suite: {current_url}")
-                                    break
-                            except NoSuchElementException:
-                                continue
-                    except Exception:
-                        pass
-
-            # ========================================
-            # STEP 10.5: Fallback - Navigate to "Your Pages" to find the page URL
-            # ========================================
-            # Check if we have a valid page URL, if not, go to Your Pages list
-            invalid_url_patterns = ['/help/', '/policies/', '/latest/', 'business.facebook.com', '/pages/creation']
-            url_is_invalid = any(pattern in current_url.lower() for pattern in invalid_url_patterns) or current_url == "https://www.facebook.com/"
-
-            if url_is_invalid:
-                print(f">>> URL is invalid ({current_url}), navigating to Your Pages to find the page...")
-                try:
-                    # Navigate to Your Pages list
-                    self.driver.get("https://www.facebook.com/pages/?category=your_pages")
-                    time.sleep(3)
-
-                    # Look for the page we just created by name
-                    # Facebook lists pages with links containing the page ID
-                    print(f">>> Looking for page '{page_name}' in Your Pages list...")
-
-                    # Find all page links on the page
-                    page_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/profile/') or contains(@href, 'facebook.com/')]")
-
-                    for link in page_links:
-                        try:
-                            link_text = link.text.strip()
-                            href = link.get_attribute('href')
-
-                            # Check if this link matches our page name
-                            if page_name.lower() in link_text.lower() and href:
-                                # Extract page ID from href
-                                # Format: facebook.com/profile.php?id=PAGE_ID or facebook.com/PAGE_ID
-                                if 'profile.php?id=' in href:
-                                    page_id_match = re.search(r'id=(\d+)', href)
-                                    if page_id_match:
-                                        extracted_id = page_id_match.group(1)
-                                        current_url = f"https://www.facebook.com/{extracted_id}"
-                                        print(f">>> Found page in Your Pages: {current_url}")
-                                        break
-                                elif re.search(r'facebook\.com/(\d+)', href):
-                                    page_id_match = re.search(r'facebook\.com/(\d+)', href)
-                                    if page_id_match:
-                                        extracted_id = page_id_match.group(1)
-                                        current_url = f"https://www.facebook.com/{extracted_id}"
-                                        print(f">>> Found page in Your Pages: {current_url}")
-                                        break
-                                else:
-                                    # Use the href directly if it looks valid
-                                    if 'facebook.com' in href and '/help/' not in href:
-                                        current_url = href
-                                        print(f">>> Found page in Your Pages: {current_url}")
-                                        break
-                        except Exception:
-                            continue
-
-                    # If still no valid URL, try looking for any recent page link
-                    if url_is_invalid or any(pattern in current_url.lower() for pattern in invalid_url_patterns):
-                        print(">>> Could not find page by name, looking for most recent page...")
-                        # Look for the first valid page link
-                        all_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'facebook.com/') and not(contains(@href, '/help/'))]")
-                        for link in all_links[:20]:  # Check first 20 links
-                            href = link.get_attribute('href')
-                            if href and re.search(r'facebook\.com/\d+', href):
-                                current_url = href
-                                print(f">>> Found page link: {current_url}")
-                                break
-
-                except Exception as e:
-                    print(f">>> Error navigating to Your Pages: {e}")
-
-            print(f">>> Final URL: {current_url}")
-
-            # Check for rate limit or error messages on page
-            rate_limit_detected = False
-            try:
-                error_texts = [
-                    "try again later",
-                    "rate limit",
-                    "too many",
-                    "slow down",
-                    "something went wrong",
-                    "couldn't create",
-                    "can't create",
-                ]
-                page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-                for error_text in error_texts:
-                    if error_text in page_text:
-                        print(f">>> RATE LIMIT DETECTED: Found '{error_text}' on page")
-                        rate_limit_detected = True
-                        break
-            except Exception:
-                pass
-
-            # Try to extract page ID from URL
+            # Extract page ID from URL
             page_id = ""
-            page_created_successfully = False
 
-            # URLs to exclude (not actual page URLs)
-            invalid_page_paths = [
-                '/help/', '/policies/', '/guidelines/', '/legal/',
-                '/privacy/', '/terms/', '/about/', '/settings/',
-                '/login', '/checkpoint', '/recover', '/support/',
-                '/business/', '/developers/', '/pages/creation',
-                'business.facebook.com', '/latest/', '/inbox/'
-            ]
-
-            # Check if current_url is a valid page URL
-            is_valid_page_url = (
-                "facebook.com" in current_url and
-                "business.facebook.com" not in current_url and
-                not any(cu in current_url.lower() for cu in creation_urls) and
-                not any(path in current_url.lower() for path in invalid_page_paths)
-            )
-
-            if is_valid_page_url:
-                # URL changed from creation page to actual page - success!
-                # Handle different URL formats:
-                # 1. profile.php?id=61584296746538 -> extract "61584296746538"
-                # 2. facebook.com/61584296746538 -> extract "61584296746538"
-                # 3. facebook.com/pagename -> extract "pagename"
-
-                if "profile.php?id=" in current_url:
-                    # Extract ID from query parameter: profile.php?id=61584296746538
-                    id_match = re.search(r'profile\.php\?id=(\d+)', current_url)
-                    if id_match:
-                        page_id = id_match.group(1)
-                        print(f">>> Extracted page ID from profile.php?id=: {page_id}")
-                elif "id=" in current_url:
-                    # Extract ID from any id= parameter
-                    id_match = re.search(r'id=(\d+)', current_url)
-                    if id_match:
-                        page_id = id_match.group(1)
-                        print(f">>> Extracted page ID from id= param: {page_id}")
-                else:
-                    # Extract from URL path: facebook.com/61584296746538
-                    parts = current_url.rstrip('/').split('/')
-                    if parts:
-                        page_id = parts[-1].split('?')[0]
-                        print(f">>> Extracted page ID from URL path: {page_id}")
-
-                print(f">>> Final extracted page ID: {page_id}")
-                page_created_successfully = True
+            # Handle different URL formats:
+            # 1. profile.php?id=61584296746538 -> extract "61584296746538"
+            # 2. facebook.com/61584296746538 -> extract "61584296746538"
+            # 3. facebook.com/pagename -> extract "pagename"
+            if "profile.php?id=" in current_url:
+                id_match = re.search(r'profile\.php\?id=(\d+)', current_url)
+                if id_match:
+                    page_id = id_match.group(1)
+                    print(f">>> Extracted page ID: {page_id}")
+            elif "id=" in current_url:
+                id_match = re.search(r'id=(\d+)', current_url)
+                if id_match:
+                    page_id = id_match.group(1)
+                    print(f">>> Extracted page ID: {page_id}")
+            elif re.search(r'facebook\.com/(\d+)', current_url):
+                id_match = re.search(r'facebook\.com/(\d+)', current_url)
+                if id_match:
+                    page_id = id_match.group(1)
+                    print(f">>> Extracted page ID: {page_id}")
             else:
-                # Still on creation page - check if this is due to rate limit
-                print(">>> WARNING: Still on creation page URL")
-
-                # Try to get page URL from the page itself (look for success indicators)
-                try:
-                    # Look for "Your Page has been created" or similar success message
-                    success_indicators = [
-                        "//span[contains(text(), 'Page has been created')]",
-                        "//span[contains(text(), 'page has been created')]",
-                        "//div[contains(text(), 'Page has been created')]",
-                        "//span[contains(text(), 'Congratulations')]",
-                    ]
-                    for selector in success_indicators:
-                        try:
-                            success_elem = self.driver.find_element(By.XPATH, selector)
-                            if success_elem.is_displayed():
-                                print(f">>> Found success indicator: {selector}")
-                                page_created_successfully = True
-                                break
-                        except NoSuchElementException:
-                            continue
-
-                    # Try to find page links - exclude help center, policies, etc.
-                    page_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'facebook.com/') and not(contains(@href, 'pages/creation'))]")
-                    excluded_paths = [
-                        '/help/', '/policies/', '/guidelines/', '/legal/',
-                        '/privacy/', '/terms/', '/about/', '/settings/',
-                        '/login', '/checkpoint', '/recover', '/support/',
-                        'business.facebook.com', 'developers.facebook.com'
-                    ]
-                    for link in page_links[:10]:
-                        href = link.get_attribute('href')
-                        if href and 'facebook.com/' in href and '/pages/creation' not in href:
-                            # Skip excluded URLs
-                            if any(excluded in href.lower() for excluded in excluded_paths):
-                                print(f">>> Skipping non-page URL: {href}")
-                                continue
-                            # Valid page URL found
-                            current_url = href
-                            print(f">>> Found page link: {current_url}")
-                            page_created_successfully = True
-                            break
-                except Exception:
-                    pass
+                # Extract from URL path
+                parts = current_url.rstrip('/').split('/')
+                if parts:
+                    page_id = parts[-1].split('?')[0]
+                    print(f">>> Extracted page ID from path: {page_id}")
 
             duration = time.time() - start_time
 
-            # Determine final success status
-            # Success only if: Create button was clicked AND (URL changed OR success indicator found) AND no rate limit
-            if create_clicked and page_created_successfully and not rate_limit_detected:
+            # Success if: Create button clicked AND redirected to page (page_url_found)
+            if create_clicked and page_url_found:
                 self.metrics['pages_created'] += 1
                 self.metrics['total_time'] += duration
                 print(f">>> SUCCESS: Page created! Name: {page_name}, URL: {current_url}")
@@ -1315,10 +1080,8 @@ class FacebookPageGenerator:
                 error_msg = "Page creation failed"
                 if not create_clicked:
                     error_msg = "Could not click Create Page button"
-                elif rate_limit_detected:
-                    error_msg = "Rate limit detected - Facebook blocked the request"
-                elif not page_created_successfully:
-                    error_msg = "Page creation not confirmed - still on creation page"
+                elif not page_url_found:
+                    error_msg = "Page creation not confirmed - did not redirect to page"
 
                 print(f">>> FAILED: {error_msg}")
                 logger.error(f"Page creation failed for {page_name}: {error_msg}")
