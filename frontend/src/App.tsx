@@ -49,6 +49,7 @@ function App() {
   // Only fetch tasks once on initial load
   useEffect(() => {
     fetchTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Only poll when there are active/running tasks
