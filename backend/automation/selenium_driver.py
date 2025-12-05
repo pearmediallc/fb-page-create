@@ -925,46 +925,38 @@ class FacebookPageGenerator:
                 print(f">>> DEBUG: Found {len(divs_with_role)} div[role='button'] elements")
 
             # ========================================
-            # STEP 9: Click through wizard steps (Next → Next → Skip → Done)
-            # FAST: Max 3 sec per button
+            # STEP 9: Click buttons FAST (Next → Next → Skip → Done)
+            # Buttons appear quickly - click within 0.5 sec each
             # ========================================
-            print(">>> PAGE CREATION STEP 9: Clicking through wizard steps (FAST)...")
+            print(">>> PAGE CREATION STEP 9: Clicking buttons FAST...")
 
-            # Define wizard button selectors
-            wizard_buttons = [
-                ("Next", ["//span[text()='Next']", "//div[@role='button']//span[text()='Next']"]),
-                ("Next", ["//span[text()='Next']", "//div[@role='button']//span[text()='Next']"]),
-                ("Skip", ["//span[text()='Skip']", "//span[contains(text(), 'Skip')]"]),
-                ("Done", ["//span[text()='Done']", "//span[contains(text(), 'Done')]"]),
+            # Brief wait after Create Page click
+            time.sleep(0.5)
+
+            # Click buttons as fast as possible
+            fast_buttons = [
+                ("Next", "//span[text()='Next']"),
+                ("Next", "//span[text()='Next']"),
+                ("Skip", "//span[text()='Skip']"),
+                ("Done", "//span[text()='Done']"),
             ]
 
-            for step_num, (button_name, selectors) in enumerate(wizard_buttons, 1):
-                print(f">>> WIZARD {step_num}/4: '{button_name}'...")
-                button_clicked = False
-                step_start = time.time()
-
-                # Try for max 3 seconds
-                while (time.time() - step_start) < 3:
-                    for selector in selectors:
-                        try:
-                            elements = self.driver.find_elements(By.XPATH, selector)
-                            for elem in elements:
-                                if elem.is_displayed() and elem.is_enabled():
-                                    elem.click()
-                                    print(f">>> Clicked '{button_name}'")
-                                    button_clicked = True
-                                    time.sleep(0.5)
-                                    break
-                            if button_clicked:
-                                break
-                        except Exception:
-                            continue
-                    if button_clicked:
-                        break
-                    time.sleep(0.3)
-
-                if not button_clicked:
-                    print(f">>> '{button_name}' not found, continuing...")
+            for button_name, selector in fast_buttons:
+                clicked = False
+                # Try 5 times in 0.5 sec total
+                for _ in range(5):
+                    try:
+                        elem = self.driver.find_element(By.XPATH, selector)
+                        if elem.is_displayed():
+                            self.driver.execute_script("arguments[0].click();", elem)
+                            print(f">>> Clicked '{button_name}'")
+                            clicked = True
+                            time.sleep(0.5)  # 0.5 sec before next button
+                            break
+                    except:
+                        time.sleep(0.1)
+                if not clicked:
+                    print(f">>> '{button_name}' not found")
 
             # ========================================
             # STEP 9.5: Wait for redirect to Professional Dashboard (max 60 sec, exit early)
