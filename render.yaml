@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: fb-page-create
+    runtime: python
+    buildCommand: ./build.sh
+    startCommand: cd backend && gunicorn core.wsgi:application
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: NODE_VERSION
+        value: 18

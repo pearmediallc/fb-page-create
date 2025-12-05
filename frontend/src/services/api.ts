@@ -11,7 +11,8 @@ import {
   GeneratedPage,
 } from '../types';
 
-const API_BASE = 'http://localhost:8000/api';
+// Use relative URL when deployed (same origin), localhost for development
+const API_BASE = process.env.REACT_APP_API_URL || '/api';
 
 const api = axios.create({
   baseURL: API_BASE,
