@@ -1,8 +1,9 @@
 services:
   - type: web
     name: fb-page-create
-    runtime: docker
+    env: docker
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
       - key: SELENIUM_HEADLESS
         value: "True"
