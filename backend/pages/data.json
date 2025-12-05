@@ -135,6 +135,40 @@
       "started_at": "2025-12-05 01:46:07 IST",
       "completed_at": "2025-12-05 01:57:27 IST",
       "error_message": null
+    },
+    "fbff01d468d344478c4e4302": {
+      "_id": "fbff01d468d344478c4e4302",
+      "profile_id": "",
+      "num_pages": 1,
+      "base_page_name": "Makeup",
+      "public_profile_url": "https://www.facebook.com/profile.php?id=61583786947641",
+      "status": "completed",
+      "celery_task_id": null,
+      "pages_created": 0,
+      "pages_failed": 1,
+      "shares_sent": 0,
+      "shares_failed": 0,
+      "created_at": "2025-12-05 21:04:06 IST",
+      "started_at": "2025-12-05 21:04:06 IST",
+      "completed_at": "2025-12-05 21:08:59 IST",
+      "error_message": null
+    },
+    "ad7c488bdfa24c048cd4886f": {
+      "_id": "ad7c488bdfa24c048cd4886f",
+      "profile_id": "",
+      "num_pages": 1,
+      "base_page_name": "Secure Auto Insurance",
+      "public_profile_url": "https://www.facebook.com/profile.php?id=61581753605988",
+      "status": "completed",
+      "celery_task_id": null,
+      "pages_created": 0,
+      "pages_failed": 1,
+      "shares_sent": 0,
+      "shares_failed": 0,
+      "created_at": "2025-12-05 21:33:57 IST",
+      "started_at": "2025-12-05 21:33:57 IST",
+      "completed_at": "2025-12-05 21:38:13 IST",
+      "error_message": null
     }
   },
   "pages": {

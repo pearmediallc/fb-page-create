@@ -718,12 +718,69 @@ class FacebookPageGenerator:
             print(">>> STEP 3.5: Waiting for form (max 5 sec)...")
             try:
                 WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'], input[type='search']"))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'], input[type='search'], input[type='radio']"))
                 )
                 print(">>> Form loaded")
             except TimeoutException:
                 print(">>> Form load timeout, continuing...")
             time.sleep(0.3)
+
+            # ========================================
+            # STEP 3.6: Check for radio button selection screen (if present, click radio + Next)
+            # Some page creation flows show a radio selection before the name/category form
+            # ========================================
+            print(">>> STEP 3.6: Checking for radio button selection screen...")
+            radio_clicked = False
+
+            # Try to find and click radio button (if it exists)
+            radio_selectors = [
+                # Exact Facebook classes for radio input
+                (By.CSS_SELECTOR, "input.x1i10hfl.x9f619.xggy1nq[type='radio']"),
+                (By.CSS_SELECTOR, "input[type='radio'][aria-checked='false']"),
+                (By.CSS_SELECTOR, "input[type='radio']"),
+            ]
+
+            for selector_type, selector_value in radio_selectors:
+                if radio_clicked:
+                    break
+                try:
+                    elements = self.driver.find_elements(selector_type, selector_value)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            # Click the radio button
+                            self.driver.execute_script("arguments[0].click();", elem)
+                            print(f">>> Found and clicked radio button")
+                            radio_clicked = True
+                            time.sleep(0.5)
+                            break
+                except Exception:
+                    continue
+
+            # If radio was clicked, now click "Next" button to proceed to page form
+            if radio_clicked:
+                print(">>> Looking for 'Next' button after radio selection...")
+                next_clicked = False
+                next_button_css = "span.x1lliihq.x6ikm8r.x10wlt62.x1n2onr6.xlyipyv.xuxw1ft"
+
+                for _ in range(5):  # Try 5 times
+                    try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, next_button_css)
+                        for elem in elements:
+                            if elem.is_displayed() and elem.text == "Next":
+                                self.driver.execute_script("arguments[0].click();", elem)
+                                print(f">>> Clicked 'Next' after radio selection")
+                                next_clicked = True
+                                time.sleep(1)  # Wait for page form to load
+                                break
+                        if next_clicked:
+                            break
+                    except Exception:
+                        time.sleep(0.1)
+
+                if not next_clicked:
+                    print(">>> 'Next' button not found after radio, continuing...")
+            else:
+                print(">>> No radio button screen detected, proceeding to page form...")
 
             # ========================================
             # STEP 4: Find and fill PAGE NAME field
