@@ -1,11 +1,10 @@
 services:
   - type: web
     name: fb-page-create
-    runtime: python
-    buildCommand: ./build.sh
-    startCommand: cd backend && gunicorn core.wsgi:application
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-      - key: NODE_VERSION
-        value: 18
+      - key: SELENIUM_HEADLESS
+        value: "True"
+      - key: DEBUG
+        value: "False"

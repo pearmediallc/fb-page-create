@@ -100,6 +100,11 @@ class FacebookPageGenerator:
         options.add_argument("--disable-default-apps")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
+        # Docker/container specific options
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--single-process")
+        options.add_argument("--disable-features=VizDisplayCompositor")
+        options.add_argument("--remote-debugging-port=9222")
 
         # Add proxy if configured
         if self.proxy_url:
