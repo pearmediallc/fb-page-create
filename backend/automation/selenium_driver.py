@@ -987,38 +987,54 @@ class FacebookPageGenerator:
                 print(f">>> DEBUG: Found {len(divs_with_role)} div[role='button'] elements")
 
             # ========================================
-            # STEP 9: Click buttons FAST (Next → Skip → Next → Done)
-            # Correct order! Buttons appear quickly - click within 0.5 sec each
+            # STEP 9: Click buttons with proper timing (Next → Skip → Next → Done)
+            # Manual process takes 3-3.5 minutes, so we need realistic delays
             # ========================================
             print(">>> PAGE CREATION STEP 9: Clicking buttons (Next → Skip → Next → Done)...")
 
-            # Brief wait after Create Page click
-            time.sleep(0.5)
+            # Wait 5 seconds after Create Page click for form to process
+            time.sleep(5)
 
             # Correct button order: Next → Skip → Next → Done
             # Using CSS selector with exact Facebook classes
             button_css = "span.x1lliihq.x6ikm8r.x10wlt62.x1n2onr6.xlyipyv.xuxw1ft"
             button_order = ["Next", "Skip", "Next", "Done"]
 
+            # Wait times after each button click (in seconds)
+            button_wait_times = {
+                "Next": 8,   # Wait 8 sec after first Next
+                "Skip": 8,   # Wait 8 sec after Skip
+                "Done": 5    # Wait 5 sec after Done before checking redirect
+            }
+
             for button_name in button_order:
                 clicked = False
-                # Try 5 times in 0.5 sec total
-                for _ in range(5):
+                # Try up to 30 times over 15 seconds to find the button
+                max_attempts = 30
+                for attempt in range(max_attempts):
                     try:
                         elements = self.driver.find_elements(By.CSS_SELECTOR, button_css)
                         for elem in elements:
                             if elem.is_displayed() and elem.text == button_name:
+                                # Scroll element into view first
+                                self.driver.execute_script("arguments[0].scrollIntoView(true);", elem)
+                                time.sleep(0.3)
                                 self.driver.execute_script("arguments[0].click();", elem)
-                                print(f">>> Clicked '{button_name}'")
+                                print(f">>> Clicked '{button_name}' (attempt {attempt + 1})")
                                 clicked = True
-                                time.sleep(0.5)  # 0.5 sec before next button
+                                # Wait appropriate time after this button
+                                wait_time = button_wait_times.get(button_name, 5)
+                                print(f">>> Waiting {wait_time} seconds for next step...")
+                                time.sleep(wait_time)
                                 break
                         if clicked:
                             break
-                    except:
-                        time.sleep(0.1)
+                    except Exception as e:
+                        print(f">>> Attempt {attempt + 1}: {button_name} not ready yet...")
+                    time.sleep(0.5)  # Wait 0.5 sec between attempts
+
                 if not clicked:
-                    print(f">>> '{button_name}' not found")
+                    print(f">>> WARNING: '{button_name}' not found after {max_attempts} attempts")
 
             # ========================================
             # STEP 9.5: Wait 2 MINUTES for page redirect (do nothing, just wait)
