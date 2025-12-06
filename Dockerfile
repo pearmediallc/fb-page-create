@@ -6,10 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies including Chrome
+# Install Chromium and dependencies (more reliable than google-chrome in containers)
 RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
     wget \
-    gnupg \
     curl \
     unzip \
     xvfb \
@@ -23,16 +24,11 @@ RUN apt-get update && apt-get install -y \
     libgbm1 \
     fonts-liberation \
     xdg-utils \
+    libu2f-udev \
+    libvulkan1 \
     # Install Node.js
     nodejs \
     npm \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Chrome using modern GPG keyring approach
-RUN wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get update \
-    && apt-get install -y /tmp/chrome.deb \
-    && rm /tmp/chrome.deb \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -70,9 +66,11 @@ RUN python manage.py collectstatic --noinput
 # Expose port
 EXPOSE 10000
 
-# Set environment for headless Chrome
+# Set environment for headless Chromium
 ENV SELENIUM_HEADLESS=True
 ENV DISPLAY=:99
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 # Start command
 CMD ["gunicorn", "--bind", "0.0.0.0:10000", "core.wsgi:application"]

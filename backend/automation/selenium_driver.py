@@ -99,9 +99,22 @@ class FacebookPageGenerator:
         self.current_profile_email: str = ""  # Email of currently logged-in profile
 
     def _get_chrome_options(self) -> Options:
-        """Configure Chrome options for Selenium"""
+        """Configure Chrome/Chromium options for Selenium"""
         import random
+        import os
         options = Options()
+
+        # Set Chromium binary location (for Docker/Render)
+        chrome_bin = os.environ.get('CHROME_BIN')
+        if chrome_bin and os.path.exists(chrome_bin):
+            options.binary_location = chrome_bin
+            print(f">>> Using Chromium binary: {chrome_bin}")
+        elif os.path.exists('/usr/bin/chromium'):
+            options.binary_location = '/usr/bin/chromium'
+            print(">>> Using Chromium binary: /usr/bin/chromium")
+        elif os.path.exists('/usr/bin/chromium-browser'):
+            options.binary_location = '/usr/bin/chromium-browser'
+            print(">>> Using Chromium binary: /usr/bin/chromium-browser")
 
         # Headless mode
         if self.headless:
@@ -112,6 +125,9 @@ class FacebookPageGenerator:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
+
+        # Fake Chrome user-agent (important for Chromium to avoid detection)
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
         # Disable features that can cause crashes
         options.add_argument("--disable-extensions")
@@ -313,16 +329,27 @@ class FacebookPageGenerator:
 
     def start(self, max_retries: int = 3):
         """Initialize the WebDriver with retry logic"""
+        import os
+
         # Clean up any orphaned Chrome processes first
         self.cleanup_chrome_processes()
 
         last_error = None
         for attempt in range(max_retries):
             try:
-                print(f">>> Starting Chrome (attempt {attempt + 1}/{max_retries})...")
+                print(f">>> Starting Chromium/Chrome (attempt {attempt + 1}/{max_retries})...")
 
-                # Get ChromeDriver
-                service = Service(ChromeDriverManager().install())
+                # Use system chromedriver if available (Docker/Render), otherwise use webdriver-manager
+                chromedriver_path = os.environ.get('CHROMEDRIVER_PATH')
+                if chromedriver_path and os.path.exists(chromedriver_path):
+                    print(f">>> Using system chromedriver: {chromedriver_path}")
+                    service = Service(chromedriver_path)
+                elif os.path.exists('/usr/bin/chromedriver'):
+                    print(">>> Using system chromedriver: /usr/bin/chromedriver")
+                    service = Service('/usr/bin/chromedriver')
+                else:
+                    print(">>> Using webdriver-manager to get chromedriver")
+                    service = Service(ChromeDriverManager().install())
 
                 # Wait a bit between retries
                 if attempt > 0:
@@ -340,8 +367,8 @@ class FacebookPageGenerator:
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
                 )
 
-                print(">>> Chrome WebDriver started successfully")
-                logger.info("Chrome WebDriver started successfully")
+                print(">>> Chromium/Chrome WebDriver started successfully")
+                logger.info("Chromium/Chrome WebDriver started successfully")
                 return  # Success!
 
             except WebDriverException as e:
