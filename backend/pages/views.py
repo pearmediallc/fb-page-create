@@ -218,15 +218,81 @@ def run_task_sync(task_id: str):
                             increment_task_counter(task_id, 'shares_failed')
                             print(f">>> Failed to share page '{page_name}': {invite_result.error}")
                 else:
-                    increment_task_counter(task_id, 'pages_failed')
-                    print(f">>> Failed to create page '{page_name}': {result.error}")
+                    # Page creation FAILED - immediately try next profile
+                    print(f">>> FAILED to create page '{page_name}': {result.error}")
 
-                    # Check if rate limited - rotate if so
-                    if generator.rate_limited and not test_mode:
-                        print(">>> Rate limit detected! Attempting profile rotation...")
-                        if generator.has_more_profiles():
-                            generator.rotate_to_next_profile()
+                    # Check for rate limit indicators in error message
+                    error_lower = (result.error or "").lower()
+                    is_rate_limit = any(phrase in error_lower for phrase in [
+                        "too many", "rate limit", "try again later",
+                        "temporarily blocked", "slow down", "limit reached"
+                    ])
+
+                    if is_rate_limit:
+                        print(f">>> RATE LIMIT DETECTED: '{result.error}'")
+
+                    # On ANY page creation failure, try rotating to next profile
+                    if not test_mode and generator.has_more_profiles():
+                        print(f">>> Page creation failed! Switching to next profile...")
+                        rotated = generator.rotate_to_next_profile()
+                        if rotated:
                             current_profile_email = generator.current_profile_email
+                            print(f">>> Switched to profile: {current_profile_email}")
+
+                            # RETRY creating the same page with new profile
+                            print(f">>> RETRYING page '{page_name}' with new profile...")
+                            retry_result = generator.create_facebook_page(page_name)
+
+                            if retry_result.success:
+                                generator.increment_page_count()
+                                stored_id = store_page_details(
+                                    task_id=task_id,
+                                    page_id=retry_result.page_id,
+                                    page_name=retry_result.page_name,
+                                    page_url=retry_result.page_url,
+                                    sequence_num=i,
+                                    gender=gender
+                                )
+                                if stored_id:
+                                    increment_task_counter(task_id, 'pages_created')
+                                    print(f">>> ✓ RETRY SUCCESS: Page '{page_name}' created with new profile!")
+
+                                    # Share to profile if URL provided
+                                    if public_profile_url:
+                                        invite_result = generator.share_page_to_profile(
+                                            page_id=retry_result.page_id,
+                                            profile_url=public_profile_url,
+                                            role='admin',
+                                            page_name=retry_result.page_name
+                                        )
+                                        if invite_result.success:
+                                            store_invite(
+                                                page_id=retry_result.page_id,
+                                                page_name=retry_result.page_name,
+                                                invitee_email=public_profile_url,
+                                                invite_link=invite_result.invite_link,
+                                                role='admin',
+                                                invited_by=current_profile_email
+                                            )
+                                            increment_task_counter(task_id, 'shares_sent')
+                                        else:
+                                            increment_task_counter(task_id, 'shares_failed')
+                                    continue  # Move to next page
+                                else:
+                                    increment_task_counter(task_id, 'pages_failed')
+                            else:
+                                # Retry also failed
+                                increment_task_counter(task_id, 'pages_failed')
+                                print(f">>> ✗ RETRY FAILED: Page '{page_name}' still couldn't be created")
+                        else:
+                            # Rotation failed
+                            increment_task_counter(task_id, 'pages_failed')
+                            print(f">>> No more profiles to try, marking page as failed")
+                    else:
+                        # No more profiles available or in test mode
+                        increment_task_counter(task_id, 'pages_failed')
+                        if not generator.has_more_profiles():
+                            print(f">>> No more profiles available - cannot retry")
 
             # Log final rotation status
             if not test_mode:

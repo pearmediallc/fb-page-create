@@ -172,11 +172,18 @@ CREATOR_PROFILES = [
         'name': 'Profile 1 (Primary)',
         'pages_per_session': PAGES_PER_PROFILE,
     },
+    # Profile 2 - Used after logout from Profile 1
+    {
+        'email': os.getenv('CREATOR_PROFILE_2_EMAIL', 'itsuportsriaas@gmail.com'),
+        'password': os.getenv('CREATOR_PROFILE_2_PASSWORD', 'Hii@2000'),
+        'name': 'Profile 2 (Secondary)',
+        'pages_per_session': PAGES_PER_PROFILE,
+    },
     # Add more profiles here for rotation:
     # {
-    #     'email': os.getenv('CREATOR_PROFILE_2_EMAIL', ''),
-    #     'password': os.getenv('CREATOR_PROFILE_2_PASSWORD', ''),
-    #     'name': 'Profile 2',
+    #     'email': os.getenv('CREATOR_PROFILE_3_EMAIL', ''),
+    #     'password': os.getenv('CREATOR_PROFILE_3_PASSWORD', ''),
+    #     'name': 'Profile 3',
     #     'pages_per_session': PAGES_PER_PROFILE,
     # },
 ]
