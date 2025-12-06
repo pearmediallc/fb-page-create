@@ -124,7 +124,23 @@ class FacebookPageGenerator:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--window-size=1280,720")  # Smaller window = less memory
+
+        # AGGRESSIVE MEMORY SAVING for Render's limited RAM (512MB)
+        options.add_argument("--disable-javascript-harmony-shipping")
+        options.add_argument("--disable-renderer-accessibility")
+        options.add_argument("--disable-speech-api")
+        options.add_argument("--disable-webgl")
+        options.add_argument("--disable-webgl2")
+        options.add_argument("--disable-accelerated-2d-canvas")
+        options.add_argument("--disable-accelerated-video-decode")
+        options.add_argument("--disable-canvas-aa")
+        options.add_argument("--disable-composited-antialiasing")
+        options.add_argument("--disable-threaded-animation")
+        options.add_argument("--disable-threaded-scrolling")
+        options.add_argument("--js-flags=--max-old-space-size=256")  # Limit JS heap to 256MB
+        options.add_argument("--renderer-process-limit=1")  # Only 1 renderer process
+        options.add_argument("--single-process")  # Risk but saves memory
 
         # Fake Chrome user-agent (important for Chromium to avoid detection)
         options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -167,12 +183,15 @@ class FacebookPageGenerator:
         options.add_argument("--crash-dumps-dir=/tmp")
         options.add_argument("--disable-crash-reporter")
 
-        # NOTE: Removed --single-process as it causes instability
+        # NOTE: Using --single-process now to save memory on Render (may cause some instability)
 
         # Add proxy if configured
         if self.proxy_url:
             options.add_argument(f"--proxy-server={self.proxy_url}")
             print(f">>> Using proxy: {self.proxy_url}")
+
+        # Page load strategy - don't wait for all resources (saves time and memory)
+        options.page_load_strategy = 'eager'  # Don't wait for images/stylesheets
 
         # Disable password manager popups
         prefs = {
@@ -180,6 +199,8 @@ class FacebookPageGenerator:
             "credentials_enable_service": False,
             "profile.password_manager_enabled": False,
             "profile.default_content_settings.popups": 0,
+            # Block images to save memory (optional - may affect visual verification)
+            # "profile.managed_default_content_settings.images": 2,
         }
         options.add_experimental_option("prefs", prefs)
         return options
